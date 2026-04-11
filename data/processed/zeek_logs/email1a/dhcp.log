@@ -1,0 +1,14 @@
+#separator \x09
+#set_separator	,
+#empty_field	(empty)
+#unset_field	-
+#path	dhcp
+#open	2026-04-06-19-09-48
+#fields	ts	uids	client_addr	server_addr	mac	host_name	client_fqdn	domain	requested_addr	assigned_addr	lease_time	client_message	server_message	msg_types	duration
+#types	time	set[string]	addr	addr	string	string	string	string	addr	addr	interval	string	string	vector[string]	interval
+1432572806.482688	CkYk0J1Lp8YbIC6Rf4	131.202.243.12	-	18:03:73:b3:17:2a	wsong-BSYQZQ1	-	-	-	-	-	-	-	INFORM	0.000000
+1432573056.529099	CnRyRy1tMz1qP3n9dg	131.202.242.28	-	34:17:eb:b2:2d:bc	-	-	-	-	-	-	-	-	REQUEST	0.000000
+1432573114.425800	CUcG7P3Blt6rYpoGle	131.202.242.84	-	b8:ac:6f:36:1c:8a	GE122M03	-	-	-	-	-	-	-	INFORM	0.000000
+1432573234.435982	CDIWtc4xuqdsIzFNQ	131.202.243.27	-	18:03:73:b2:5b:a6	IB215M04	-	-	-	-	-	-	-	INFORM	0.000000
+1432573293.829344	CWDjZB2c1Ew1cVwfHj	131.202.243.26	-	18:03:73:b2:58:17	ulieru-41XS0R1	-	-	-	-	-	-	-	INFORM	0.000000
+#close	2026-04-06-19-09-49
