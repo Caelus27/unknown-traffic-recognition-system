@@ -47,6 +47,12 @@ def _load_skill_dirs() -> tuple[Path, ...]:
 ZEEK_BIN = os.getenv("ZEEK_BIN", "/opt/zeek/bin/zeek")
 NDPI_READER = os.getenv("NDPI_READER", "/home/caelus/nDPI-dev/example/ndpiReader")
 
+# 预处理置信阈值（目前主要用于后续扩展；保留该常量以兼容 core/preprocessing.py 的导入）
+try:
+    CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.8"))
+except ValueError:
+    CONFIDENCE_THRESHOLD = 0.8
+
 # 数据路径
 DATA_DIR = BASE_DIR / "data"
 SAMPLE_PCAP_DIR = DATA_DIR / "sample_pcaps"

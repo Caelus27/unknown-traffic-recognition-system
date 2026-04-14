@@ -1,0 +1,635 @@
+MyBot 项目文档：Agent 运作机制说明
+
+1. 文档目的
+
+本文档基于项目当前代码实现，说明 MyBot 中 agent 是如何从“收到一条消息”开始，经过上下文构建、模型推理、工具调用、会话保存与后台记忆整理，最终生成回复的。
+
+核心结论是：MyBot 的 agent 不是一次性生成回复，而是一个“事件驱动 + 会话持久化 + 多轮工具调用”的执行系统。主控制器是 `mybot/agent/loop.py` 中的 `AgentLoop`，真正执行多轮 LLM/tool 循环的是 `mybot/agent/runner.py` 中的 `AgentRunner`。
+
+
+2. 代码中的核心角色
+
+2.1 AgentLoop
+
+文件：`mybot/agent/loop.py`
+
+这是系统的主调度器，负责：
+
+- 从消息总线读取用户输入
+- 根据会话历史构建 prompt
+- 调用 `AgentRunner` 执行多轮推理
+- 在每轮工具调用前后推送进度
+- 将新的消息写回 session
+- 触发 memory consolidation 和 dream
+- 管理子代理、MCP 工具、命令路由、并发控制
+
+它是项目里最接近“agent 本体”的对象。
+
+2.2 AgentRunner
+
+文件：`mybot/agent/runner.py`
+
+这是底层通用执行引擎。它不关心 CLI、聊天平台或业务入口，只关心一件事：
+
+- 把一组 messages 和一组 tools 发给模型
+- 判断模型是否请求调用工具
+- 执行工具
+- 把工具结果追加回消息上下文
+- 继续下一轮
+- 直到拿到最终回答或达到终止条件
+
+可以把 `AgentLoop` 理解为“业务编排层”，把 `AgentRunner` 理解为“tool-calling 状态机”。
+
+2.3 ContextBuilder
+
+文件：`mybot/agent/context.py`
+
+负责构建发给 LLM 的完整消息上下文，包括：
+
+- system prompt
+- workspace 下的引导文件
+- memory 内容
+- 可用 skills 摘要
+- 最近历史
+- 当前消息
+- 运行时元信息，比如时间、channel、chat_id
+
+2.4 ToolRegistry 和 Tool
+
+文件：
+
+- `mybot/agent/tools/registry.py`
+- `mybot/agent/tools/base.py`
+
+`ToolRegistry` 负责注册、查找、校验和执行工具。
+
+`Tool` 是所有工具的统一抽象，要求每个工具提供：
+
+- `name`
+- `description`
+- `parameters`，即 JSON Schema
+- `execute()`
+
+模型收到的是工具 schema，不是 Python 对象；模型返回 tool call 后，系统再把它映射回真实工具执行。
+
+2.5 SessionManager
+
+文件：`mybot/session/manager.py`
+
+负责会话持久化。每个 session 使用 JSONL 文件保存在 workspace 下的 `sessions/` 目录。
+
+它保证：
+
+- 不同 channel/chat 的上下文隔离
+- 历史可恢复
+- 工具调用链不会因为重启完全丢失
+
+2.6 MemoryStore / Consolidator / Dream
+
+文件：`mybot/agent/memory.py`
+
+这部分负责长期记忆。
+
+- `MemoryStore`：文件层，管理 `memory/MEMORY.md`、`history.jsonl`、`SOUL.md`、`USER.md`
+- `Consolidator`：轻量压缩，把旧对话总结后写入 `history.jsonl`
+- `Dream`：重型记忆整理流程，分两阶段分析历史，再通过工具增量编辑 memory 文件
+
+2.7 SubagentManager
+
+文件：`mybot/agent/subagent.py`
+
+负责后台子代理。主 agent 可通过 `spawn` 工具启动子任务，子代理完成后再通过系统消息回流给主 agent。
+
+
+3. 系统从哪里启动
+
+CLI 入口在：
+
+- `mybot/__main__.py`
+- `mybot/cli/commands.py`
+
+程序化调用入口在：
+
+- `mybot/mybot.py`
+
+`MyBot.from_config()` 会根据配置：
+
+- 创建 provider
+- 创建 `MessageBus`
+- 创建 `AgentLoop`
+- 配置 workspace、model、工具、上下文窗口、执行策略
+
+之后：
+
+- CLI 单次运行会调用 `AgentLoop.process_direct()`
+- 交互式聊天或网关模式会先把消息写入 `MessageBus`，再由 `AgentLoop.run()` 持续消费
+
+
+4. 一条用户消息的完整生命周期
+
+4.1 消息进入系统
+
+消息对象定义在 `mybot/bus/events.py`：
+
+- `InboundMessage`：入站消息
+- `OutboundMessage`：出站消息
+
+消息总线定义在 `mybot/bus/queue.py`，本质是两个异步队列：
+
+- `inbound`
+- `outbound`
+
+各类 channel 或 CLI 将用户消息封装成 `InboundMessage` 后推入 `MessageBus.inbound`。
+
+4.2 AgentLoop 接收消息
+
+在 `AgentLoop.run()` 中，主循环持续消费 `bus.consume_inbound()`。
+
+逻辑顺序大致是：
+
+1. 从总线取一条入站消息
+2. 如果是高优先级命令，先走命令路由
+3. 否则为该消息创建异步任务 `_dispatch(msg)`
+4. `_dispatch()` 会按 session 上锁，保证同一会话串行处理
+5. 再进入 `_process_message()`
+
+这里有两个并发层次：
+
+- 同一个 session 串行，避免上下文被并发写坏
+- 不同 session 可以并发处理
+
+此外还支持全局并发门限，来自环境变量 `MYBOT_MAX_CONCURRENT_REQUESTS`，默认 3。
+
+4.3 获取或恢复会话
+
+`_process_message()` 会根据 `session_key` 获取 `Session`。
+
+如果上一次执行中断，`AgentLoop._restore_runtime_checkpoint()` 会把未完成的那一轮 tool call 恢复成历史消息，避免模型上下文断裂。
+
+这一步很重要，因为 MyBot 不假设进程永远不会中断。它会把运行中间态持久化到 session metadata 中。
+
+4.4 先处理 slash command
+
+如果输入是内建命令，会先经过 `CommandRouter`，而不是直接走 LLM。
+
+也就是说，agent 并不负责所有输入，命令类输入优先由规则式逻辑处理。
+
+4.5 构造 prompt 上下文
+
+`ContextBuilder.build_messages()` 会生成最终发给模型的消息列表。
+
+生成内容分成几部分：
+
+- system prompt：来自 `build_system_prompt()`
+- 历史消息：来自 session
+- 当前用户消息
+- 运行时上下文：当前时间、channel、chat_id
+
+system prompt 本身又由以下内容拼装：
+
+- `templates/agent/identity.md`
+- workspace 根目录下的引导文件：`AGENTS.md`、`SOUL.md`、`USER.md`、`TOOLS.md`
+- `memory/MEMORY.md`
+- always skills 的正文
+- 所有 skills 的摘要目录
+- 最近的 memory history 条目
+
+这里的设计是“基础人格 + 工作区约束 + 长期记忆 + 可按需加载能力”。
+
+4.6 启动多轮 AgentRunner
+
+`AgentLoop._run_agent_loop()` 会创建一个 `AgentRunSpec`，再调用：
+
+`self.runner.run(spec)`
+
+`AgentRunSpec` 里包含：
+
+- 初始 messages
+- 工具注册表
+- model
+- 最大迭代次数
+- tool result 大小限制
+- 上下文窗口和裁剪参数
+- hook
+- provider retry 策略
+- checkpoint 回调
+
+这一步之后，真正进入 agent 的“思考-调用工具-继续思考”的循环。
+
+
+5. AgentRunner 的执行状态机
+
+`AgentRunner.run()` 是整个 agent 行为的核心。
+
+每轮迭代主要做以下事情。
+
+5.1 处理历史上下文的治理
+
+在每轮请求模型前，Runner 会对 messages 做几件事：
+
+- `_backfill_missing_tool_results()`：如果历史里存在 assistant 发起了 tool_call，但 tool result 丢失，会插入一个伪造的错误结果，保证消息链合法
+- `_microcompact()`：把很久以前的大型工具输出替换成简短摘要，减少上下文长度
+- `_apply_tool_result_budget()`：对工具结果做截断或落盘引用
+- `_snip_history()`：按 token 预算裁剪历史，只保留合法且尽量完整的最近消息片段
+
+说明这个 agent 很重视上下文合法性和 token 控制，不是简单把全部历史一直堆给模型。
+
+5.2 调用模型
+
+Runner 调用的是 provider 抽象：
+
+- 非流式：`provider.chat_with_retry()`
+- 流式：`provider.chat_stream_with_retry()`
+
+Provider 抽象定义在 `mybot/providers/base.py`，统一了：
+
+- 返回文本内容
+- 返回工具调用
+- 重试机制
+- usage 统计
+- 错误分类
+- reasoning_content / thinking_blocks
+
+也就是说，AgentRunner 并不绑定单一模型厂商。
+
+5.3 如果模型请求调用工具
+
+当 `response.has_tool_calls` 为真时，Runner 会：
+
+1. 把本轮 assistant 消息追加到 messages
+2. 记录本轮请求了哪些工具
+3. 通过 hook 输出进度或 tool hint
+4. 执行 `_execute_tools()`
+5. 把每个工具结果包装成 `role=tool` 消息
+6. 继续下一轮迭代，让模型读取工具结果后再决定下一步
+
+这就是典型的 ReAct / tool-calling 循环。
+
+5.4 工具执行
+
+工具执行流程是：
+
+1. `ToolRegistry.prepare_call()` 找到工具
+2. 按 schema 自动做参数类型转换
+3. 按 JSON Schema 校验参数
+4. 调用 `tool.execute(**params)`
+
+如果允许并发，Runner 会根据 `tool.concurrency_safe` 把可并发工具放在同一批次执行。
+
+并发条件是：
+
+- 工具是只读
+- 工具不是 exclusive
+
+例如 shell `exec` 工具就是 `exclusive=True`，不会与其他工具并发跑。
+
+5.5 工具错误如何处理
+
+如果工具抛错或返回 `Error...`：
+
+- 默认会把错误文本作为 tool result 回给模型
+- 同时附加提示：`[Analyze the error above and try a different approach.]`
+
+也就是说，MyBot 默认不是“工具一报错就整轮失败”，而是让模型看到错误并自我修正。
+
+只有在配置 `fail_on_tool_error=True` 时，才会把工具错误升级成整轮失败。
+
+5.6 如果模型没有请求工具
+
+如果模型直接给出最终回答，Runner 会：
+
+- 去掉 think 内容
+- 处理空回复重试
+- 处理 length 截断恢复
+- 把最终 assistant 消息写入消息列表
+- 结束循环
+
+停止条件包括：
+
+- 正常完成
+- 模型报错
+- 最大轮数耗尽
+- 连续空回复
+- 工具致命错误
+
+
+6. 工具系统如何工作
+
+6.1 工具注册
+
+`AgentLoop._register_default_tools()` 默认注册这些工具：
+
+- 文件工具：`read_file`、`write_file`、`edit_file`、`list_dir`
+- 搜索工具：`glob`、`grep`
+- 命令工具：`exec`
+- Web 工具：`web_search`、`web_fetch`
+- 消息工具：`message`
+- 子代理工具：`spawn`
+- 定时任务工具：`cron`
+
+如果配置了 MCP，还会动态接入 MCP 工具。
+
+6.2 文件工具
+
+文件：`mybot/agent/tools/filesystem.py`
+
+特点：
+
+- 相对路径会解析到 workspace
+- 可限制只能访问 workspace 或额外允许目录
+- `read_file` 支持分页按行读取
+- 图片会返回内容块，而不是当作普通文本
+- `edit_file` 基于文本替换，支持模糊匹配和 diff 提示
+
+所以 agent 读写代码主要依赖这套工具，而不是依赖 shell。
+
+6.3 搜索工具
+
+文件：`mybot/agent/tools/search.py`
+
+- `glob`：找文件
+- `grep`：搜内容
+
+二者都跳过大量噪音目录，比如 `.git`、`node_modules`、`__pycache__` 等。
+
+6.4 Shell 工具
+
+文件：`mybot/agent/tools/shell.py`
+
+`exec` 用于执行命令，但被加了安全护栏：
+
+- 拦截危险命令模式，如 `rm -rf`、`format`、`shutdown`
+- 检测内部 URL，防止访问私网
+- 如果启用 `restrict_to_workspace`，禁止路径越界
+- 支持 sandbox 包装
+- 输出截断到 10000 字符
+- 超时默认 60 秒，最多 600 秒
+
+因此 shell 在这里是“受限能力”，不是无限制终端。
+
+6.5 Web 工具
+
+文件：`mybot/agent/tools/web.py`
+
+- `web_search`：支持 Brave、Tavily、SearXNG、Jina、DuckDuckGo
+- `web_fetch`：抓取网页正文
+
+安全措施包括：
+
+- 只允许 http/https
+- 解析 DNS 并阻止访问私网地址
+- 校验重定向目标
+- 把外部网页内容标记为 untrusted data
+
+这一点是为了避免 prompt injection 和 SSRF。
+
+6.6 message 工具
+
+文件：`mybot/agent/tools/message.py`
+
+这是 agent 主动发消息给用户的方式，支持：
+
+- 发送文本
+- 附件发送
+- 指定 channel/chat_id
+
+如果本轮已经用 `message` 工具把回复发送出去了，主流程就不会再额外发送一次最终文本，避免重复回复。
+
+6.7 spawn 工具
+
+文件：`mybot/agent/tools/spawn.py`
+
+主 agent 可以把复杂任务拆给后台子代理执行。返回值先告诉用户“子代理已启动”，完成后再异步通知。
+
+
+7. 会话和历史是怎么保存的
+
+会话保存在 workspace 下的 `sessions/*.jsonl`。
+
+每个 `Session` 包含：
+
+- `messages`
+- `metadata`
+- `last_consolidated`
+
+保存时，`AgentLoop._save_turn()` 会把本轮新增消息写回 session，同时做一些清理：
+
+- 超长 tool result 会截断
+- 运行时元信息前缀不会原样存入用户历史
+- base64 图片不会直接持久化，而是变成占位文本
+- 空 assistant 消息会跳过
+
+session 的一个关键点是：它保存的是“对话消息链”，不是单纯的聊天纯文本，因此 tool_calls、tool_call_id、reasoning_content 也会被带上。
+
+
+8. 运行中断后为什么还能续上
+
+AgentLoop 使用 runtime checkpoint 保存每一轮中间态。
+
+在工具调用阶段，Runner 会通过 checkpoint 回调把下面的信息写进 session metadata：
+
+- assistant_message
+- 已完成 tool result
+- 尚未完成的 pending tool calls
+
+如果进程中断，下次同一 session 再来消息时：
+
+- `_restore_runtime_checkpoint()` 会先把未完成那轮还原成历史消息
+- 对未完成的 tool call 生成一个错误 tool result：`Task interrupted before this tool finished.`
+
+这样模型下一次看到上下文时，不会误以为那次工具调用成功完成了。
+
+
+9. 长期记忆如何运作
+
+9.1 MemoryStore
+
+`MemoryStore` 管理这些文件：
+
+- `memory/MEMORY.md`
+- `memory/history.jsonl`
+- `SOUL.md`
+- `USER.md`
+
+其中：
+
+- `MEMORY.md` 偏长期事实
+- `history.jsonl` 偏归档后的历史摘要
+- `SOUL.md` 和 `USER.md` 偏角色与用户信息
+
+9.2 Consolidator
+
+`Consolidator.maybe_consolidate_by_tokens()` 会在 session prompt 过大时触发。
+
+流程是：
+
+1. 估算当前 prompt token
+2. 如果超过安全预算，找到一个安全的 user-turn 边界
+3. 把这段旧消息总结成摘要
+4. 写入 `memory/history.jsonl`
+5. 把 session 的 `last_consolidated` 向前推进
+
+这相当于“把老对话压缩出主上下文窗口”。
+
+9.3 Dream
+
+Dream 是更重的记忆整理机制，不只是归档摘要，而是尝试更新长期记忆文件。
+
+它分两阶段：
+
+第一阶段：
+
+- 从 `history.jsonl` 取未处理条目
+- 调用模型做分析
+
+第二阶段：
+
+- 用一个最小化工具集 `read_file + edit_file`
+- 再跑一次 `AgentRunner`
+- 让模型增量修改 `MEMORY.md`、`SOUL.md`、`USER.md`
+
+这种设计避免让模型整份重写记忆文件，而是借助工具做局部编辑，更稳。
+
+
+10. 子代理如何运作
+
+子代理管理器在 `mybot/agent/subagent.py`。
+
+主流程如下：
+
+1. 主 agent 调用 `spawn` 工具
+2. `SubagentManager.spawn()` 创建后台异步任务
+3. 子代理拥有自己的一套工具注册表
+4. 子代理用自己的 system prompt 和 `AgentRunner` 独立执行
+5. 完成后，子代理把结果渲染成模板文本
+6. 再封装成 `channel="system"` 的 `InboundMessage`
+7. 主 `AgentLoop` 收到这条 system message 后，继续在原 session 中处理
+
+关键点是：子代理不是直接把字符串塞进主 agent 内存，而是通过同一个消息总线回流，重新触发主 agent 推理。
+
+这样做的好处是：
+
+- 主代理和子代理解耦
+- 子代理结果会进入正式会话历史
+- 主代理可以继续基于结果做下一步动作
+
+
+11. Skills 在 agent 中扮演什么角色
+
+`SkillsLoader` 负责加载技能目录。
+
+技能来源有两类：
+
+- workspace 下的 `skills/`
+- 内置技能目录 `mybot/skills/`
+
+skills 在当前实现中的作用主要有两个：
+
+1. 在 system prompt 中提供所有技能的摘要目录，让模型知道“有哪些能力可按需读取”
+2. 对标记为 always 的技能，直接把技能正文注入上下文
+
+也就是说，skill 本质上不是 Python 插件，而是“给模型看的操作说明文档”。
+
+
+12. Provider 抽象如何支撑多模型
+
+Provider 基类在 `mybot/providers/base.py`。
+
+统一抽象了：
+
+- `LLMResponse`
+- `ToolCallRequest`
+- `chat()`
+- `chat_stream()`
+- 自动重试
+
+模型只要能被适配成：
+
+- 返回文本
+- 返回结构化 tool_calls
+
+就可以挂到这套 agent 运行框架上。
+
+这也是为什么 `AgentRunner` 完全不依赖 OpenAI 专有 SDK 细节。
+
+
+13. 这个 agent 的几个关键设计点
+
+13.1 它是“循环式 agent”，不是单轮问答
+
+只要模型持续发 tool calls，系统就会继续：
+
+模型 -> 工具 -> 模型 -> 工具 -> 模型
+
+直到得到 final response。
+
+13.2 它把“业务编排”和“循环执行”拆开了
+
+- `AgentLoop` 处理业务层：session、bus、hooks、progress、memory、commands
+- `AgentRunner` 处理执行层：LLM 调用、工具执行、错误恢复、上下文裁剪
+
+这种拆分让 Dream、子代理等模块也能复用 Runner。
+
+13.3 它把工具当成一等公民
+
+工具有：
+
+- 明确 schema
+- 参数校验
+- 并发属性
+- 安全边界
+
+所以 agent 的能力边界不是写死在 prompt 里，而是由工具注册表决定。
+
+13.4 它不是“只记聊天历史”
+
+它同时维护：
+
+- session 消息历史
+- memory 摘要历史
+- 长期记忆文件
+- runtime checkpoint
+
+所以系统既能保留短期交互上下文，也能逐步沉淀长期记忆。
+
+13.5 它对恢复和安全做了专门设计
+
+恢复：
+
+- checkpoint 恢复未完成 tool call
+- session JSONL 持久化
+
+安全：
+
+- shell 护栏
+- web SSRF 校验
+- 外部内容标记为 untrusted
+- workspace 路径限制
+
+
+14. 用一句话总结 agent 的工作方式
+
+MyBot 的 agent 本质上是一个围绕 `AgentLoop + AgentRunner` 构建的异步状态机：它从消息总线接收输入，基于会话、记忆和技能构造上下文，驱动模型进行多轮工具调用，把结果持久化回 session，并通过 consolidation、dream 与 subagent 机制把短期执行能力扩展成长期连续工作的代理系统。
+
+
+15. 相关核心文件索引
+
+- `mybot/mybot.py`：程序化入口
+- `mybot/cli/commands.py`：CLI 入口与运行模式
+- `mybot/agent/loop.py`：主 agent 编排器
+- `mybot/agent/runner.py`：多轮 tool-calling 执行器
+- `mybot/agent/context.py`：prompt 上下文构建
+- `mybot/agent/memory.py`：记忆、归档、dream
+- `mybot/agent/subagent.py`：子代理管理
+- `mybot/agent/skills.py`：skills 加载
+- `mybot/agent/tools/base.py`：工具抽象
+- `mybot/agent/tools/registry.py`：工具注册与执行
+- `mybot/agent/tools/filesystem.py`：文件工具
+- `mybot/agent/tools/search.py`：搜索工具
+- `mybot/agent/tools/shell.py`：命令执行工具
+- `mybot/agent/tools/web.py`：网络工具
+- `mybot/session/manager.py`：会话持久化
+- `mybot/bus/events.py`：消息结构
+- `mybot/bus/queue.py`：消息总线
+- `mybot/providers/base.py`：模型 provider 抽象
+

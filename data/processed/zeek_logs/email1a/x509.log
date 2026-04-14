@@ -3,7 +3,7 @@
 #empty_field	(empty)
 #unset_field	-
 #path	x509
-#open	2026-04-06-19-09-48
+#open	2026-04-11-22-05-36
 #fields	ts	fingerprint	certificate.version	certificate.serial	certificate.subject	certificate.issuer	certificate.not_valid_before	certificate.not_valid_after	certificate.key_alg	certificate.sig_alg	certificate.key_type	certificate.key_length	certificate.exponent	certificate.curve	san.dns	san.uri	san.email	san.ip	basic_constraints.ca	basic_constraints.path_len	host_cert	client_cert
 #types	time	string	count	string	string	string	time	time	string	string	string	count	string	string	vector[string]	vector[string]	vector[string]	vector[addr]	bool	count	bool	bool
 1432572785.214954	bec92f38935e075c8468640c72dd8b1391f745007121d1710f35d3681ef2b255	3	19EA692AF40B2CDB	CN=smtp.googlemail.com,O=Google Inc,L=Mountain View,ST=California,C=US	CN=Google Internet Authority G2,O=Google Inc,C=US	1424254667.000000	1451520000.000000	rsaEncryption	sha1WithRSAEncryption	rsa	2048	65537	-	smtp.googlemail.com	-	-	-	F	-	T	F
@@ -12,4 +12,4 @@
 1432572791.180677	7366e80a55facdcb95c6ed8171458680398316f42953f81977679e69c02d85ff	3	C2237D34CA0D3C39	O=\\<unknown\\>,emailAddress=foo@anywhere,C=US,L=US,ST=\\<unknown\\>,CN=Gander.ad.unb.ca	O=\\<unknown\\>,emailAddress=foo@anywhere,C=US,L=US,ST=\\<unknown\\>,CN=Gander.ad.unb.ca	1383071957.000000	1701283157.000000	rsaEncryption	sha1WithRSAEncryption	rsa	1024	65537	-	-	-	-	-	T	-	T	F
 1432572791.180677	f955959ca27790b485241057075002ae9aa58947d6a2c72e8eaa47531e526868	3	D12845F5F7859151	O=\\<unknown\\>,emailAddress=foo@anywhere,C=US,L=US,ST=\\<unknown\\>,CN=Gander.ad.unb.ca	O=\\<unknown\\>,emailAddress=foo@anywhere,C=US,L=US,ST=\\<unknown\\>,CN=Gander.ad.unb.ca	1383071950.000000	1701283150.000000	rsaEncryption	sha1WithRSAEncryption	rsa	1024	65537	-	-	-	-	-	T	-	F	F
 1432572811.987045	c237d6518e66a4dca3d14f1c1f7922ee69bc9fb0de68aa33a4a235ca43dd8fd4	3	40169ADF1E196D81	CN=pop.googlemail.com,O=Google Inc,L=Mountain View,ST=California,C=US	CN=Google Internet Authority G2,O=Google Inc,C=US	1430907105.000000	1438646400.000000	rsaEncryption	sha1WithRSAEncryption	rsa	2048	65537	-	pop.googlemail.com	-	-	-	F	-	T	F
-#close	2026-04-06-19-09-49
+#close	2026-04-11-22-05-37
