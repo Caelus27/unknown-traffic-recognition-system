@@ -3,8 +3,8 @@
 #empty_field	(empty)
 #unset_field	-
 #path	http
-#open	2026-04-11-22-05-36
+#open	2026-04-15-12-51-01
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	trans_depth	method	host	uri	referrer	version	user_agent	origin	request_body_len	response_body_len	status_code	status_msg	info_code	info_msg	tags	username	password	proxied	orig_fuids	orig_filenames	orig_mime_types	resp_fuids	resp_filenames	resp_mime_types
 #types	time	string	addr	port	addr	port	count	string	string	string	string	string	string	string	count	count	count	string	count	string	set[enum]	string	string	set[string]	vector[string]	vector[string]	vector[string]	vector[string]	vector[string]	vector[string]
-1432572924.779375	CQvEf12TTFqrskf7sk	131.202.240.242	5496	4.28.136.42	80	1	GET	dnl-03.geo.kaspersky.com	/index/u0607g.xml.dif	-	1.1	*BcfBAAAAS2AAAEFBAAwMWxHM4_gRlxVbitrdDRaRMcz5dUDAXAQAAIAAKAA=	-	0	1192	200	OK	-	-	(empty)	-	-	X-FORWARDED-FOR -> 127.0.0.1,VIA -> 1.0 GE128M36 (squid/3.5.4-20150510-r13825)	-	-	-	FStUpGaMEo4vPSS1f	-	application/x-kaspavupdate
-#close	2026-04-11-22-05-37
+1432572924.779375	CYL99wvXuRTHJIag9	131.202.240.242	5496	4.28.136.42	80	1	GET	dnl-03.geo.kaspersky.com	/index/u0607g.xml.dif	-	1.1	*BcfBAAAAS2AAAEFBAAwMWxHM4_gRlxVbitrdDRaRMcz5dUDAXAQAAIAAKAA=	-	0	1192	200	OK	-	-	(empty)	-	-	VIA -> 1.0 GE128M36 (squid/3.5.4-20150510-r13825),X-FORWARDED-FOR -> 127.0.0.1	-	-	-	FStUpGaMEo4vPSS1f	-	application/x-kaspavupdate
+#close	2026-04-15-12-51-02

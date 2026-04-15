@@ -60,18 +60,31 @@ PROCESSED_DIR = DATA_DIR / "processed"
 KNOWN_SNI_PATH = DATA_DIR / "known_sni_list.json"
 KNOWN_RESULTS_DIR = PROCESSED_DIR / "known_results"
 UNKNOWN_FLOWS_DIR = PROCESSED_DIR / "unknown_flows"
+UNKNOWN_FLOWS_PCAP_DIR = PROCESSED_DIR / "unknown_flows_pcap"
 NDPI_PROCESSED_DIR = PROCESSED_DIR / "ndpi_processed"
 ZEEK_LOG_DIR = PROCESSED_DIR / "zeek_logs"
 PROCESSED_RESULTS_DIR = PROCESSED_DIR / "results"
 FINAL_RESULTS_DIR = DATA_DIR / "results"
 LOG_DIR = BASE_DIR / "logs"
 
+# 分类模型接口（Phase 1.5）
+CLASSIFIER_ENABLE = _as_bool("CLASSIFIER_ENABLE", False)
+CLASSIFIER_MODEL_NAME = os.getenv("CLASSIFIER_MODEL_NAME", "pending_classifier")
+CLASSIFIER_INPUT_MODE = os.getenv("CLASSIFIER_INPUT_MODE", "per_flow_pcap")
+CLASSIFIER_ADAPTER = os.getenv("CLASSIFIER_ADAPTER")
+
+# Agent 侧项目化配置（Phase 2 会继续使用；先在 Phase 1 固化路径）
+AGENT_WORKSPACE_DIR = Path(os.getenv("AGENT_WORKSPACE_DIR", BASE_DIR / "agent_workspace")).expanduser()
+MYBOT_CONFIG_PATH = Path(os.getenv("MYBOT_CONFIG_PATH", AGENT_WORKSPACE_DIR / "config.json")).expanduser()
+
 # 创建目录
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 KNOWN_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 UNKNOWN_FLOWS_DIR.mkdir(parents=True, exist_ok=True)
+UNKNOWN_FLOWS_PCAP_DIR.mkdir(parents=True, exist_ok=True)
 NDPI_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 ZEEK_LOG_DIR.mkdir(parents=True, exist_ok=True)
 PROCESSED_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 FINAL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+AGENT_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)

@@ -15,7 +15,9 @@ from config import (
     NDPI_READER,
     PROCESSED_RESULTS_DIR,
     UNKNOWN_FLOWS_DIR,
+    UNKNOWN_FLOWS_PCAP_DIR,
 )
+from core.classifier import apply_classification_results, run_classifier_for_manifest
 from core.models import DNSMetadata, FlowMetadata, FlowStats, HTTPMetadata, TLSMetadata
 from core.utils import ndpi_utils as ndpi_module
 from core.utils.helpers import (
@@ -34,6 +36,7 @@ from core.utils.helpers import (
     safe_int,
 )
 from core.utils.ndpi_utils import init_ndpi_utils
+from core.utils.pcap_utils import create_unknown_flow_pcap_manifest
 from core.utils.zeek_utils import extract_traffic_info, run_zeek_on_pcap
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -93,6 +96,8 @@ class TrafficPreprocessor:
 
     def process_pcap(self, pcap_path: str | Path, save_result: bool = True) -> Dict[str, Any]:
         pcap_path = Path(pcap_path)
+        timestamp = pd.Timestamp.now().isoformat()
+        task_id = f"{pcap_path.stem}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
         logger.info("开始处理 PCAP: %s", pcap_path.name)
 
         zeek_log_dir = run_zeek_on_pcap(pcap_path)
@@ -116,6 +121,7 @@ class TrafficPreprocessor:
             flow.confidence = 0.85 if is_known else 0.45
 
             payload = flow.model_dump(mode="json")
+            self._slim_flow_payload(payload)
             payload["reason"] = flow.preprocess_reason
             payload["evidence"] = self._build_preprocess_evidence(flow, is_known)
 
@@ -125,9 +131,37 @@ class TrafficPreprocessor:
             else:
                 unknown_flows.append(payload)
 
+        task_dir = UNKNOWN_FLOWS_PCAP_DIR / task_id
+        manifest = create_unknown_flow_pcap_manifest(
+            pcap_path=pcap_path,
+            unknown_flows=unknown_flows,
+            task_id=task_id,
+            task_dir=task_dir,
+            timestamp=timestamp,
+        )
+        self._apply_pcap_manifest(unknown_flows, manifest)
+
+        manifest_path = Path(manifest.get("manifest_path") or task_dir / "manifest.json")
+        classifier_results = run_classifier_for_manifest(manifest_path)
+        apply_classification_results(unknown_flows, classifier_results)
+
+        # 上面会把 unknown_pcap_path / pcap_extraction / classification_model 等中间字段
+        # 注入到 unknown_flows。为了让最终输出与 20260411 样例一致，这里统一裁剪掉。
+        for flow_payload in unknown_flows:
+            self._slim_flow_payload(flow_payload)
+
         result = {
+            "schema_version": "preprocess/v1",
+            "task_id": task_id,
             "pcap_name": pcap_path.name,
-            "timestamp": pd.Timestamp.now().isoformat(),
+            "pcap_path": str(pcap_path),
+            "timestamp": timestamp,
+            "artifacts": {
+                "zeek_log_dir": str(zeek_log_dir),
+                "ndpi_csv_path": str(ndpi_csv_path),
+                "unknown_flows_pcap_dir": str(task_dir),
+                "unknown_flows_manifest": str(manifest_path),
+            },
             "stats": {
                 "total_flows": len(ndpi_df),
                 "known_count": len(known_results),
@@ -147,7 +181,7 @@ class TrafficPreprocessor:
             len(unknown_flows),
             result["stats"]["known_ratio"],
         )
-        return result
+        return self._build_public_result(result)
 
     def load_result(self, json_path: str | Path) -> Dict[str, Any]:
         path = Path(json_path)
@@ -162,34 +196,85 @@ class TrafficPreprocessor:
             return {}
 
     def _save_result_to_json(self, result: Dict[str, Any], pcap_path: Path) -> None:
-        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-        base_filename = f"{pcap_path.stem}_{timestamp}"
+        base_filename = result.get("task_id") or f"{pcap_path.stem}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
 
-        dump_json_file(PROCESSED_RESULTS_DIR / f"{base_filename}.json", result)
+        public = self._build_public_result(result)
+        dump_json_file(PROCESSED_RESULTS_DIR / f"{base_filename}.json", public)
         dump_json_file(
             KNOWN_RESULTS_DIR / f"{base_filename}_known.json",
             {
-                "pcap_name": result.get("pcap_name"),
-                "timestamp": result.get("timestamp"),
+                "pcap_name": public.get("pcap_name"),
+                "timestamp": public.get("timestamp"),
                 "stats": {
-                    "total_flows": result.get("stats", {}).get("total_flows", 0),
-                    "known_count": result.get("stats", {}).get("known_count", 0),
+                    "total_flows": public.get("stats", {}).get("total_flows", 0),
+                    "known_count": public.get("stats", {}).get("known_count", 0),
                 },
-                "known": result.get("known", []),
+                "known": public.get("known", []),
             },
         )
         dump_json_file(
             UNKNOWN_FLOWS_DIR / f"{base_filename}_unknown.json",
             {
-                "pcap_name": result.get("pcap_name"),
-                "timestamp": result.get("timestamp"),
+                "pcap_name": public.get("pcap_name"),
+                "timestamp": public.get("timestamp"),
                 "stats": {
-                    "total_flows": result.get("stats", {}).get("total_flows", 0),
-                    "unknown_count": result.get("stats", {}).get("unknown_count", 0),
+                    "total_flows": public.get("stats", {}).get("total_flows", 0),
+                    "unknown_count": public.get("stats", {}).get("unknown_count", 0),
                 },
-                "unknown": result.get("unknown", []),
+                "unknown": public.get("unknown", []),
             },
         )
+
+    @staticmethod
+    def _slim_flow_payload(payload: dict[str, Any]) -> None:
+        """就地裁剪 flow payload，避免输出过多原始特征/中间产物字段。"""
+        for key in ("raw_sources", "unknown_pcap_path", "pcap_extraction", "classification_model"):
+            payload.pop(key, None)
+
+        http = payload.get("http")
+        if isinstance(http, dict):
+            http.pop("raw_records", None)
+
+        dns = payload.get("dns")
+        if isinstance(dns, dict):
+            dns.pop("raw_records", None)
+
+        tls = payload.get("tls")
+        if isinstance(tls, dict):
+            tls.pop("raw_ssl_records", None)
+            tls.pop("raw_x509_records", None)
+
+    @staticmethod
+    def _build_public_result(result: Dict[str, Any]) -> Dict[str, Any]:
+        """生成对外输出的精简结果结构（对齐 data/processed/* 20260411 样例）。"""
+        return {
+            "pcap_name": result.get("pcap_name"),
+            "timestamp": result.get("timestamp"),
+            "stats": result.get("stats", {}),
+            "known": result.get("known", []),
+            "unknown": result.get("unknown", []),
+        }
+
+    def _apply_pcap_manifest(self, unknown_flows: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+        manifest_flows = manifest.get("flows", [])
+        for index, flow in enumerate(unknown_flows):
+            entry = manifest_flows[index] if index < len(manifest_flows) else None
+            if not entry:
+                flow["unknown_pcap_path"] = None
+                flow["pcap_extraction"] = {
+                    "status": "manifest_missing",
+                    "error": manifest.get("error"),
+                    "packet_count": 0,
+                    "byte_count": 0,
+                }
+                continue
+            flow["unknown_pcap_path"] = entry.get("unknown_pcap_path")
+            flow["pcap_extraction"] = entry.get("pcap_extraction") or {
+                "status": "unknown",
+                "error": None,
+                "packet_count": 0,
+                "byte_count": 0,
+            }
 
     def _build_zeek_indexes(self, zeek_info: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
         uid_index: dict[str, dict[str, list[dict[str, Any]]]] = {}
