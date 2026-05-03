@@ -19,8 +19,8 @@ standalone_inference/
 
 ```bash
 python standalone_inference/generate_infer_dataset.py ^
-  --input_path external_pcaps/web1 ^
-  --output_dir external_pcaps/web1 ^
+  --input_path classifier_model/assets/data/web1 ^
+  --output_dir classifier_model/assets/data/web1 ^
   --dataset_level packet ^
   --feature_mode window_payload ^
   --window_payload_packets 5 ^
@@ -35,8 +35,8 @@ python standalone_inference/generate_infer_dataset.py ^
 python standalone_inference/run_classifier_infer.py ^
   --load_model_path models/best_model.bin ^
   --vocab_path models/encryptd_vocab.txt ^
-  --test_path external_pcaps/web1/nolabel_infer_dataset.tsv ^
-  --prediction_path external_pcaps/web1/prediction.tsv ^
+  --test_path classifier_model/assets/data/web1/nolabel_infer_dataset.tsv ^
+  --prediction_path classifier_model/assets/data/web1/prediction.tsv ^
   --labels_num 5 ^
   --embedding word_pos_seg ^
   --encoder transformer ^
@@ -46,8 +46,8 @@ python standalone_inference/run_classifier_infer.py ^
   --output_prob
 ```
 
-## 输出文件
-
+## 输出和输出文件
+- 打印概率前2的类别和对应概率
 - `infer_dataset.tsv` / `nolabel_infer_dataset.tsv`：推理数据（带 / 不带占位 label 列）
 - `infer_manifest.tsv`：每条样本对应的原始 pcap 路径
 - `prediction.tsv`：

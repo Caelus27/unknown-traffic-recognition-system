@@ -1,14 +1,13 @@
 # 未知网络流量应用协议识别系统 × MyBot 整合改造开发文档（设计稿）
 
-> 目的：把当前仓库中的三部分代码（“未知网络流量应用协议识别系统”框架 + `mybot-main`+流量分类模型classifier_model）整合为一个可端到端运行的离线批处理系统。
+> 目的：把当前仓库中的三部分代码（“未知网络流量应用协议识别系统”框架 + `mybot-main`+classifier_model）整合为一个可端到端运行的离线批处理系统。
 > 
 > 已确认关键决策（已按此作为默认方案编写）：
-> - mybot 集成：保留 `mybot-main` 子项目，通过 `pip install -e mybot-main` 引入
+> - mybot 集成：保留 `mybot-main` 子项目独立性，在业务侧封装调用。
 > - Agent 工作区：使用独立 workspace（建议目录 `agent_workspace/`）
 > - Agent 输出：`final_label/app/service_type/confidence/evidence/reason`（结构化 `AgentResult/v1`）
 > - 分类模型边界：分类模型作为模块A预处理阶段的可插拔步骤，不作为 Agent 工具；模型结果随未知流 JSON 一起交付给 Agent
 > - 未知流 PCAP 产物：每次预处理任务在 `data/processed/unknown_flows_pcap/<task_id>/` 下生成独立目录，供后续端到端分类模型按 PCAP 输入分析
-
 ---
 
 ## 0. 术语与约定
@@ -17,8 +16,8 @@
 - **Flow（流）**：按五元组（源/目的 IP、端口、传输层协议）聚合的会话/连接记录。
 - **SNI**：TLS ClientHello Server Name Indication，优先用于加密流量的“应用层”识别。
 - **复合标签**：`<app>:<service_type>`。
-  - `app`：应用/品牌（如 `bilibili`、`wechat`、`gmail`、`unknown_app`）。
-  - `service_type`：服务类型（如 `video`、`audio`、`file`、`chat`、`news`、`control`、`web`、`email`）。
+  - `app`：应用/品牌（如 `bilibili`、`wechat`、`gmail`、`unknown_app`，主要由agent负责识别）。
+  - `service_type`：服务类型（固定为0: "bulk-transfer",1: "interactive",2: "stream",3: "vpn",4: "web"中的一个，这几类和分类模型能对应，agent根据模型输出和其他证据进行判断）。
 - **模块A（预处理/已知过滤/分类模型接口）**：Zeek + nDPI（`ndpiReader`）快速过滤/标记大部分已知流量，输出已知/未知集合；同时把未知流从原始 PCAP 中切分为新的 PCAP 产物，并预留分类模型输出字段。
 - **模块B（Agent 智能挖掘）**：基于改造的 MyBot，针对未知集合主动调用工具、多源证据融合，输出复合标签 + 解释日志 + 置信度。
 - **模块C（后处理与可视化）**：统计、聚合、生成图表与审计报告。
@@ -29,7 +28,7 @@
 
 ### 1.1 仓库分区
 
-当前仓库根目录包含两大部分：
+当前仓库根目录包含三大部分：
 
 1) **未知网络流量识别系统（业务仓库）**（根目录）：
 - `config.py`：Zeek/nDPI 路径与数据目录。
@@ -44,29 +43,19 @@
   - CLI：`python -m mybot` 或安装后 `mybot ...`
   - SDK：`from mybot import MyBot; bot = MyBot.from_config(...); await bot.run(...)`
 
-### 1.2 模块A：当前实现能力与输出形态
+3） **分类模型（classifier_model）**:具体见 `classifier_model/README.md`，是一个完全独立的模块，当前实现了从 PCAP 生成推理数据和加载模型推理的功能；后续改造时会作为模块A内部可插拔组件，提供分类结果回填到未知流 JSON 的接口。
 
-模块A目前的目标是：**尽可能过滤 90%+ 已知流量，减少 Agent 负担**。
+### 1.2 模块A：输出形态
+
+模块A的目标是：**尽可能过滤 90%+ 已知流量，减少 Agent 负担**。
 
 - Zeek：生成 `conn.log/ssl.log/http.log/dns.log/x509.log` 等。
 - nDPI：`ndpiReader -i <pcap> -C <csv>` 生成流级 CSV（nDPI 5.x 下 `-C` 是“写 CSV 到指定路径”，CSV 常见分隔符为 `|`，表头可能带 `#` 前缀）。
 - 结果 JSON：历史产物位于 `data/processed/results/*.json`、`data/processed/known_results/*_known.json`、`data/processed/unknown_flows/*_unknown.json`。
-- 未知流 PCAP：当前代码尚未实现；改造后应在 `data/processed/unknown_flows_pcap/<task_id>/` 下为每次任务生成目录，保存未知流对应的 PCAP 文件与 manifest。
+- 未知流 PCAP：在 `data/processed/unknown_flows_pcap/<task_id>/` 下为每次任务生成目录，保存未知流对应的 PCAP 文件与 manifest。
 
-#### 1.2.1 Schema 分裂（需要在改造期收敛）
 
-仓库里存在两套输出 schema：
-
-- **历史输出（已在 `data/processed/...` 存在的 JSON）**：
-  - 单条流为“扁平字段”：`flow_id/src_ip/dst_ip/sni/ndpi_app/is_encrypted/proto_stack/duration/...`。
-  - `evidence` 较少，通常仅 `sni_source`。
-
-- **当前代码意图（`core/preprocessing.py`）**：
-  - 试图输出更丰富的嵌套结构（`http/dns/tls/stats/raw_sources/...`），并通过 `FlowMetadata.model_dump()` 统一序列化。
-
-> 改造结论：需要在“整合阶段”定义并固化 **PreprocessResult v1** 与 **AgentInput v1** 两套稳定契约，并提供对历史扁平 schema 的兼容/迁移策略。
-
-#### 1.2.2 当前发现的前置缺口（后续实现必须先修）
+#### 1.2.1 当前发现的前置缺口（后续实现必须先修）
 
 > 这些不是本文要改的代码，但必须在实施阶段优先处理，否则系统无法端到端联通。
 
@@ -104,7 +93,7 @@ flowchart LR
   UP --> CM[分类模型(预处理插件)]
   CM --> U0
 
-  U0 --> U1[Agent 输入(精简/脱敏)]
+  U0 --> U1[Agent 输入]
   U1 --> B[模块B MyBot Agent]
   B --> U2[Unknown 已标注结果]
 
@@ -435,68 +424,8 @@ Agent 的输出必须是结构化、可机器解析、可聚合的。推荐：
 
 ---
 
-## 6. Agent 设计（Prompt、Skills、工具与冲突解决）
 
-### 6.1 场景划分（与 dev_doc 对齐）
-
-Agent 必须显式区分并走不同工作流：
-
-1) **明文流量（HTTP 或其它明文协议）**
-- 优先读 `http.host/urls/content_types/user_agent` 推断。
-- 必要时 `web_fetch`（访问 URL，提取标题/关键词）来判定应用与服务类型。
-
-2) **加密流量 + SNI 存在但未知/未命中**
-- 优先用 `sni` 做品牌识别（域名品牌、二级域名模式、常见 CDN/云服务区分）。
-- 若允许联网：`web_search`/`web_fetch` 对域名做主动内容确认。
-- 失败时：使用证书 SAN/Issuer、JA3S、IP ASN/WHOIS（若工具可用）。
-
-3) **加密流量 + SNI 缺失（或不可得）**
-- 走“证书/IP/行为统计”路径：
-  - 证书 SAN/Issuer 是否暴露品牌；
-  - IP ASN/归属是否指向特定云/服务；
-  - 行为统计（字节方向比、持续时间、端口）推断服务类型。
-- 这类流量可以允许输出 `unknown_app:<service_type>` 或 `unknown_app:web`。
-
-### 6.2 冲突解决（优先级规则）
-
-建议在 Agent 输出里把冲突解决逻辑显式化：
-
-- **SNI 命中白名单或强品牌特征**：直接决定 `app`，服务类型由白名单或内容补齐。
-- **主动获取成功（网页标题/关键词/可识别的站点内容）**：在 SNI 不可靠或为泛域名时可覆盖。
-- **证书/JA3S/IP 归属**：中等权重证据；用于补强或在无 SNI 时兜底。
-- **统计特征/分类模型预处理结果**：低权重，只做辅助；分类模型结果来自模块A回填的 `classification_model` 字段，不由 Agent 现场调用模型。
-
-### 6.3 Skills 规划（建议清单）
-
-建议为未知流量识别 Agent 新增 workspace skills（放在 `agent_workspace/skills/`）：
-
-- `traffic-label-format`：输出必须是 `AgentResult/v1` JSON，禁止散文输出。
-- `sni-triage`：如何从 SNI 提取品牌（泛域名识别、通配符匹配、二级域名规则）。
-- `web-title-extract`：如何用 `web_fetch` 访问域名/URL，抽取标题与关键词，判断 `app/service_type`。
-- `cert-summary`：如何从 TLS 元数据（SAN/Issuer/JA3S）提取有用线索（不要求实现 openssl）。
-- `classifier-evidence`：如何读取并低权重使用模块A回填的 `classification_model.label/probability`，以及在与 SNI/主动获取冲突时如何降权。
-- `ip-intel`（可选，若后续开放 exec）：如何使用 `whois`/`ipinfo` 类工具判断 ASN/归属。
-
-每个 skill 都应包含：
-
-- 触发条件（何时使用）
-- 输入字段（从 AgentInputJob 读哪些字段）
-- 工具使用步骤
-- 失败回退策略
-- 输出字段映射（如何写入 `evidence`）
-
-### 6.4 工具能力与安全策略（建议默认最小权限）
-
-- 建议默认：
-  - 允许：`read_file`（读取 `inputs/*.json`）、`web_search/web_fetch`（若允许联网）、`list_dir`。
-  - 禁止或谨慎开启：`write_file/edit_file`（避免污染数据）、`exec`（避免误操作与环境差异）。
-- 若必须开启 `exec`：
-  - 建议只允许在 `agent_workspace/` 下工作；
-  - 并用技能明确“可执行命令白名单”（例如只允许 `whois`, `openssl x509`, `curl -I` 等只读命令）。
-
----
-
-## 7. 端到端运行流程（实现阶段的建议入口）
+## 6. 端到端运行流程（实现阶段的建议入口）
 
 > 下面描述的是“实现后”的推荐流程，用于指导后续写脚本/模块。
 
@@ -535,119 +464,5 @@ Agent 必须显式区分并走不同工作流：
 
 ---
 
-## 8. 日志、可观测性与评估
+注意，目前只需要走通流程，能从 PCAP 产出预处理结果、生成 Agent 输入、得到 Agent 输出，并完成回填与报告生成；后续可以逐步优化每个模块的细节与性能。
 
-### 8.1 日志落盘建议
-
-- 模块A：保留 Zeek 日志目录、nDPI CSV、未知流 PCAP 任务目录与 manifest（便于溯源和分类模型复现实验）。
-- 模块B：
-  - 以 `session_key` 绑定一次 PCAP 处理（例如 `traffic:<pcap_stem>:<ts>`）。
-  - 让 mybot sessions 保存每轮工具调用（天然具备 trace）。
-  - 额外把 Agent 的最终 JSON 输出单独落盘（不要只存在对话里）。
-
-### 8.2 评估与 LangSmith（规划）
-
-dev_doc.txt 中提到“集成 LangSmith 进行 Agent 调试与评估”。实现阶段建议路径：
-
-- 用 mybot 的 Hook 机制（`AgentHook`）在“模型调用前后/工具调用前后”记录事件。
-- 将事件导出到：
-  - 本地 JSONL（最低成本，先做这个），或
-  - LangSmith/其它 tracing 平台（第二阶段再接）。
-
----
-
-## 9. 改造步骤与里程碑（建议按本科周期切分）
-
-### Phase 0：环境与依赖收敛（1~2 天）
-
-- 明确 Python 版本（建议 3.10+）。
-- 建立统一 venv。
-- 通过 `pip install -e mybot-main` 让业务侧可 import `mybot`。
-
-### Phase 1：模块A可运行与 schema 固化（2~4 天）
-
-- 补齐 `core/models.py`（Pydantic v2）并与 `core/preprocessing.py` 对齐。
-- 在 `config.py` 补齐缺失常量与目录（至少 `UNKNOWN_FLOWS_PCAP_DIR`，`CONFIDENCE_THRESHOLD` 已存在但后续可拆分阈值）。
-- 产出 `PreprocessResult/v1` 并提供“兼容历史扁平输出”的转换脚本（只读迁移）。
-- 实现未知流 PCAP 任务目录与 manifest：`data/processed/unknown_flows_pcap/<task_id>/manifest.json`。
-- 在 UnknownFlow JSON 中加入 `unknown_pcap_path`、`pcap_extraction`、`classification_model` 占位字段。
-
-### Phase 1.5：分类模型预处理接口（1~3 天，模型代码由后续自行接入）
-
-- 定义 `core/classifier/` 或等价适配层接口：输入为 `unknown_flows_pcap/<task_id>/manifest.json`，输出以 `flow_key` 回填。
-- 模型未接入时保持 `classification_model.status="not_run"`，不得阻塞预处理与 Agent 流程。
-- 模型接入后输出 `label/probability/topk/model_name`，作为 Agent 的低权重证据。
-
-### Phase 2：模块B最小闭环（3~6 天）
-
-- 创建 `agent_workspace/` 初始化模板与 skills（只要能让 Agent 输出严格 JSON）。
-- 实现 `core/agent/runner.py`：
-  - 读取 `AgentInputJob/v1`
-  - 调用 mybot SDK
-  - 解析与校验输出 JSON
-  - 落盘 `AgentResult/v1`
-
-### Phase 3：合并与可视化（2~5 天）
-
-- 合并 known + unknown_labeled。
-- 实现最小可视化：
-  - 应用层占比饼图
-  - 服务类型柱状图
-  - Sankey（应用→服务类型）
-
-### Phase 4：证据增强与主动工具迭代（持续迭代）
-
-- 开启/封装 IP 归属/WHOIS/证书细节工具。
-- 优化分类模型接口与评估记录（仍保持为模块A预处理结果，不改成 Agent 工具）。
-- 冲突案例收集与规则/提示词微调。
-
----
-
-## 10. 已确认决策（实现阶段按此执行）
-
-1) **mybot 的集成方式**：保留 `mybot-main` 子项目，并通过 `pip install -e mybot-main` 引入；业务侧以 SDK 方式调用（`MyBot.from_config(...).run(...)`）为主。
-
-2) **Agent workspace 放置**：使用独立目录 `agent_workspace/` 作为 mybot workspace，并默认开启 `tools.restrict_to_workspace=true` 以隔离 sessions/memory/写入风险。
-
-3) **Agent 输出的严格程度**：模块B输出采用结构化 `AgentResult/v1`，每条决策至少包含 `final_label/app/service_type/confidence/evidence/reason`（便于论文实验、可视化与审计溯源）。
-
-4) **分类模型接入边界**：分类模型嵌入模块A预处理阶段，读取 `data/processed/unknown_flows_pcap/<task_id>/` 下的未知流 PCAP，输出标签与概率并回填 UnknownFlow；Agent 只消费该结果作为低权重证据。
-
----
-
-## 11. 附录：历史输出（扁平 schema）兼容提示
-
-仓库现有 `data/processed/unknown_flows/*_unknown.json` 的流对象大致为：
-
-```json
-{
-  "flow_id": 349,
-  "src_ip": "fe80::...",
-  "dst_ip": "ff02::...",
-  "sni": null,
-  "ndpi_app": "ICMPV6",
-  "is_encrypted": true,
-  "proto_stack": "ICMPV6",
-  "duration": 495.637,
-  "c_to_s_bytes": 430,
-  "s_to_c_bytes": 0,
-  "total_bytes": 430,
-  "confidence": 0.4,
-  "evidence": {"sni_source": "none"},
-  "reason": "SNI未知或不在白名单",
-  "unknown_pcap_path": null,
-  "classification_model": {
-    "status": "not_run",
-    "model_name": null,
-    "label": null,
-    "probability": null
-  }
-}
-```
-
-实现阶段如需兼容：
-
-- 可在“Agent 输入整形”时补齐：`flow_key`、`src_port/dst_port/transport`（若历史文件缺失，则需要从 nDPI CSV 或 Zeek conn.log 回查）。
-- 历史文件没有 `unknown_pcap_path` 与 `classification_model` 字段时，兼容层应补默认空值，避免 Agent 输入 schema 分裂。
-
----
