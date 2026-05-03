@@ -145,10 +145,17 @@ class TrafficPreprocessor:
         classifier_results = run_classifier_for_manifest(manifest_path)
         apply_classification_results(unknown_flows, classifier_results)
 
-        # 上面会把 unknown_pcap_path / pcap_extraction / classification_model 等中间字段
-        # 注入到 unknown_flows。为了让最终输出与 20260411 样例一致，这里统一裁剪掉。
+        # 将分类模型输出(标签/概率)落到 unknown 结果中。
+        # 模型适配器接入前，默认会产生空占位（None）。
         for flow_payload in unknown_flows:
-            self._slim_flow_payload(flow_payload)
+            classification = flow_payload.get("classification_model")
+            if isinstance(classification, dict):
+                flow_payload["model_label"] = classification.get("label")
+                flow_payload["model_probability"] = classification.get("probability")
+            else:
+                flow_payload["model_label"] = None
+                flow_payload["model_probability"] = None
+            flow_payload.pop("classification_model", None)
 
         result = {
             "schema_version": "preprocess/v1",
@@ -257,9 +264,27 @@ class TrafficPreprocessor:
 
     def _apply_pcap_manifest(self, unknown_flows: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
         manifest_flows = manifest.get("flows", [])
+        by_flow_key: dict[str, dict[str, Any]] = {}
+        for entry in manifest_flows:
+            flow_key = normalize_text(entry.get("flow_key"))
+            if flow_key:
+                by_flow_key[flow_key] = entry
+
+        if len(manifest_flows) != len(unknown_flows):
+            logger.warning(
+                "unknown_flows 与 manifest.flows 数量不一致: unknown=%s manifest=%s",
+                len(unknown_flows),
+                len(manifest_flows),
+            )
+
         for index, flow in enumerate(unknown_flows):
-            entry = manifest_flows[index] if index < len(manifest_flows) else None
+            flow_key = normalize_text(flow.get("flow_key"))
+            entry = by_flow_key.get(flow_key) if flow_key else None
+            if entry is None:
+                entry = manifest_flows[index] if index < len(manifest_flows) else None
+
             if not entry:
+                flow["unknown_pcap_index"] = index + 1
                 flow["unknown_pcap_path"] = None
                 flow["pcap_extraction"] = {
                     "status": "manifest_missing",
@@ -268,6 +293,8 @@ class TrafficPreprocessor:
                     "byte_count": 0,
                 }
                 continue
+
+            flow["unknown_pcap_index"] = safe_int(entry.get("index")) or (index + 1)
             flow["unknown_pcap_path"] = entry.get("unknown_pcap_path")
             flow["pcap_extraction"] = entry.get("pcap_extraction") or {
                 "status": "unknown",

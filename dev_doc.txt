@@ -27,7 +27,7 @@ text[输入层]
 [预处理层 - 已知流量过滤（模块A）]
 ├── 流聚合 + 元数据提取（SNI、证书、端口、统计特征）
 ├── 开源DPI/日志工具过滤（nDPI + Zeek 为主）
-│   ├── 明文流量 → 直接识别具体服务类型 → known:xxx:service_type
+│   ├── 明文流量 → 直接识别具体服务类型 → known:xxx:service_type，但是还不知道如何生成第一维度标签
 │   ├── 加密 + SNI已知/可标记 → 直接映射标签（known:bilibili:video）
 │   └── SNI未知/未匹配/置信低 → 未知流量集合（带元数据）
 ├── 未知流PCAP切分 → data/processed/unknown_flows_pcap/<task_id>/
@@ -132,7 +132,6 @@ unknown-traffic-experiment/
 │   │   ├── ndpi_utils.py              # nDPI调用（ndpiReader） + 输出解析
 │   │   ├── pcap_utils.py              # PCAP基本读取（可选Scapy/Pyshark）
 │   │   └── helpers.py                 # 通用函数（置信度计算、标签映射、日志记录）
-│   └── visualization.py               # 可视化函数（Plotly生成图表，保存为HTML/PNG/JSON）
 ├── logs/                              # 运行日志（.gitignore）
 └── .gitignore                         # 忽略 __pycache__、.env、data/large_pcaps、logs等
 
