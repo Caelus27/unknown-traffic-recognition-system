@@ -466,3 +466,26 @@ Agent 的输出必须是结构化、可机器解析、可聚合的。推荐：
 
 注意，目前只需要走通流程，能从 PCAP 产出预处理结果、生成 Agent 输入、得到 Agent 输出，并完成回填与报告生成；后续可以逐步优化每个模块的细节与性能。
 
+---
+
+## 实施完成节点（2026-05-04）
+
+按本设计稿落地的实现位置：
+
+| 章节                              | 落地位置                                                                                  |
+| --------------------------------- | ----------------------------------------------------------------------------------------- |
+| §3.1 mybot 子项目 + 业务侧封装    | `core/agent/runner.py`（`run_agent` / `run_agent_sync`）                                  |
+| §3.2 独立 Agent Workspace         | `agent_workspace/{AGENTS.md, TOOLS.md, SOUL.md, USER.md, config.json, skills/}`           |
+| §4.1 模块A 配置                   | `config.py`（CLASSIFIER_*、AGENT_WORKSPACE_DIR、MYBOT_CONFIG_PATH）                       |
+| §4.2 模块B mybot 配置             | `agent_workspace/config.json`（占位，api_key 走环境变量）                                  |
+| §5.1 PreprocessResult/v1          | `core/preprocessing.py`（已就绪，含 unknown_flows_pcap 切片 + manifest）                  |
+| §5.1.3 分类模型接口               | `core/classifier/adapter.py` + `core/classifier/etbert_adapter.py`                        |
+| §5.2 AgentInputJob/v1             | `core/agent/input_builder.py` + `core/agent/schema.py`                                    |
+| §5.3 AgentResult/v1               | `core/agent/result_parser.py` + `core/agent/schema.py`                                    |
+| §5.4 FinalReport/v1               | `core/merge.py`                                                                           |
+| §6 端到端流程                     | `scripts/run_pipeline.py`                                                                 |
+| 可视化（饼/柱/Sankey）            | `core/visualization.py`（Plotly，缺失时降级跳过）                                         |
+
+未实现的范围（明确推后）：增量缓存、批量 PCAP 并行、LangSmith 集成。
+
+

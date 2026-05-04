@@ -73,6 +73,11 @@ CLASSIFIER_MODEL_NAME = os.getenv("CLASSIFIER_MODEL_NAME", "pending_classifier")
 CLASSIFIER_INPUT_MODE = os.getenv("CLASSIFIER_INPUT_MODE", "per_flow_pcap")
 CLASSIFIER_ADAPTER = os.getenv("CLASSIFIER_ADAPTER")
 
+# ET-BERT 分类模型权重路径（仅在 etbert_adapter 启用时使用）
+CLASSIFIER_MODEL_DIR = Path(os.getenv("CLASSIFIER_MODEL_DIR", BASE_DIR / "classifier_model")).expanduser()
+CLASSIFIER_MODEL_BIN = Path(os.getenv("CLASSIFIER_MODEL_BIN", CLASSIFIER_MODEL_DIR / "assets" / "models" / "best_model.bin")).expanduser()
+CLASSIFIER_VOCAB = Path(os.getenv("CLASSIFIER_VOCAB", CLASSIFIER_MODEL_DIR / "assets" / "models" / "encryptd_vocab.txt")).expanduser()
+
 # Agent 侧项目化配置（Phase 2 会继续使用；先在 Phase 1 固化路径）
 AGENT_WORKSPACE_DIR = Path(os.getenv("AGENT_WORKSPACE_DIR", BASE_DIR / "agent_workspace")).expanduser()
 MYBOT_CONFIG_PATH = Path(os.getenv("MYBOT_CONFIG_PATH", AGENT_WORKSPACE_DIR / "config.json")).expanduser()

@@ -8,10 +8,23 @@ Convert raw pcap/pcapng files into ET-BERT inference TSV files.
 
 import argparse
 import csv
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+FLOW_PCAP_PATTERN = re.compile(r"flow_(\d{6,})\.pcap$", re.IGNORECASE)
+
+
+def parse_flow_index(pcap_path):
+    """Extract integer flow index from filenames like 'flow_000007.pcap'."""
+    if not pcap_path:
+        return ""
+    match = FLOW_PCAP_PATTERN.search(str(pcap_path))
+    if not match:
+        return ""
+    return str(int(match.group(1)))
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -276,9 +289,16 @@ def write_infer_tsv(records, output_dir):
 
     with manifest_file.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, delimiter="\t")
-        writer.writerow(["row_id", "source_pcap", "split_sample"])
+        writer.writerow(["row_id", "source_pcap", "split_sample", "flow_index"])
         for index, record in enumerate(records, start=1):
-            writer.writerow([index, record["source_pcap"], record["split_sample"]])
+            writer.writerow(
+                [
+                    index,
+                    record["source_pcap"],
+                    record["split_sample"],
+                    parse_flow_index(record["source_pcap"]),
+                ]
+            )
 
     return label_file, nolabel_file, manifest_file
 
