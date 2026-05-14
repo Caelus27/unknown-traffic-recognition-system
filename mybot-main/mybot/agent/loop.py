@@ -19,6 +19,12 @@ from mybot.agent.runner import AgentRunSpec, AgentRunner
 from mybot.agent.subagent import SubagentManager
 from mybot.agent.tools.cron import CronTool
 from mybot.agent.skills import BUILTIN_SKILLS_DIR
+from mybot.agent.tools.domain import (
+    DnsHealthCheckTool,
+    DnsRecordsTool,
+    DomainAnalysisTool,
+    WhoisLookupTool,
+)
 from mybot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from mybot.agent.tools.message import MessageTool
 from mybot.agent.tools.registry import ToolRegistry
@@ -279,6 +285,13 @@ class AgentLoop:
         if self.web_config.enable:
             self.tools.register(WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy))
             self.tools.register(WebFetchTool(proxy=self.web_config.proxy))
+        # Domain analysis tools (formerly domain-tools-mcp-server). These are
+        # network-only lookups — they do not touch the local filesystem or
+        # exec, so they're safe to expose even when restrictToWorkspace=true.
+        self.tools.register(WhoisLookupTool())
+        self.tools.register(DnsRecordsTool())
+        self.tools.register(DnsHealthCheckTool())
+        self.tools.register(DomainAnalysisTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:

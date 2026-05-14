@@ -1,6 +1,6 @@
 """单独测试 Agent 模块（不跑预处理/分类模型）。
 
-三种模式：
+四种模式：
 
 1) 健康检查（验证 mybot config + provider api_key + 网络）：
    python scripts/test_agent.py --ping
@@ -10,6 +10,10 @@
 
 3) 自定义 prompt，验证 AGENTS.md / SKILL.md 是否被加载：
    python scripts/test_agent.py --prompt "请用一句话告诉我你能用哪些工具，以及你的工作目标是什么。"
+
+4) 交互式对话（REPL）：连续多轮对同一个 session_key 发送消息，:q / :quit 退出，:reset 切换到全新 session：
+   python scripts/test_agent.py --interactive
+   python scripts/test_agent.py --interactive --session debug:repl
 """
 
 from __future__ import annotations
@@ -18,12 +22,45 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _bootstrap_env() -> None:
+    """复用 run_serve.py 里的 mybot config / classifier 自动发现，方便单跑此脚本。"""
+    if os.getenv("MYBOT_CONFIG_PATH"):
+        return
+    seen: set[Path] = set()
+    for start in (Path.cwd(), PROJECT_ROOT, Path.home()):
+        cur = start.resolve()
+        while True:
+            cand = (cur / ".mybot" / "config.json").resolve()
+            if cand not in seen:
+                seen.add(cand)
+                if cand.is_file():
+                    try:
+                        payload = json.loads(cand.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        payload = {}
+                    providers = (payload or {}).get("providers") or {}
+                    if any(
+                        isinstance(c, dict) and (c.get("apiKey") or c.get("api_key"))
+                        for c in providers.values()
+                    ):
+                        os.environ["MYBOT_CONFIG_PATH"] = str(cand)
+                        print(f"[test_agent] using mybot config: {cand}", file=sys.stderr)
+                        return
+            if cur.parent == cur:
+                break
+            cur = cur.parent
+
+
+_bootstrap_env()
 
 from config import AGENT_WORKSPACE_DIR, MYBOT_CONFIG_PATH  # noqa: E402
 from core.agent.result_parser import parse_agent_outputs  # noqa: E402
@@ -50,6 +87,7 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--ping", action="store_true", help="发一句简单消息验证 provider")
     group.add_argument("--chunk", type=str, help="用已有的 inputs/*.json 跑一次 Agent")
     group.add_argument("--prompt", type=str, help="自定义 prompt 直接发给 Agent")
+    group.add_argument("--interactive", action="store_true", help="进入 REPL 与 Agent 多轮对话")
     parser.add_argument("--workspace", type=str, default=str(AGENT_WORKSPACE_DIR))
     parser.add_argument("--config", type=str, default=str(MYBOT_CONFIG_PATH))
     parser.add_argument("--session", type=str, default="test:agent")
@@ -84,6 +122,43 @@ async def main_async(args: argparse.Namespace) -> int:
         result = await bot.run(args.prompt, session_key=args.session)
         print("← LLM 回复:")
         print(result.content or "(空回复)")
+        return 0
+
+    if args.interactive:
+        print(f"→ 进入交互模式（session={args.session}）")
+        print("  输入空行重发上一条；:q / :quit 退出；:reset 换一个全新 session_key（清空上下文）。")
+        session_key = args.session
+        last_input = ""
+        turn = 0
+        while True:
+            try:
+                user_input = input("\nyou> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if user_input in {":q", ":quit", ":exit"}:
+                break
+            if user_input == ":reset":
+                turn += 1
+                session_key = f"{args.session}:reset{turn}"
+                last_input = ""
+                print(f"  ↻ session 切换为 {session_key}")
+                continue
+            if not user_input:
+                if not last_input:
+                    continue
+                user_input = last_input
+                print(f"  (重发上一条) {user_input}")
+            last_input = user_input
+            try:
+                result = await bot.run(user_input, session_key=session_key)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  ✗ 调用失败: {exc}")
+                continue
+            print("\nbot>", (result.content or "(空回复)"))
+            tools_used = getattr(result, "tools_used", None)
+            if tools_used:
+                print(f"  · tools used: {', '.join(tools_used)}")
         return 0
 
     # --chunk 模式

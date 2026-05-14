@@ -12,6 +12,12 @@ from mybot.agent.hook import AgentHook, AgentHookContext
 from mybot.utils.prompt_templates import render_template
 from mybot.agent.runner import AgentRunSpec, AgentRunner
 from mybot.agent.skills import BUILTIN_SKILLS_DIR
+from mybot.agent.tools.domain import (
+    DnsHealthCheckTool,
+    DnsRecordsTool,
+    DomainAnalysisTool,
+    WhoisLookupTool,
+)
 from mybot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from mybot.agent.tools.registry import ToolRegistry
 from mybot.agent.tools.search import GlobTool, GrepTool
@@ -130,6 +136,11 @@ class SubagentManager:
             if self.web_config.enable:
                 tools.register(WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy))
                 tools.register(WebFetchTool(proxy=self.web_config.proxy))
+            # Domain analysis tools (formerly domain-tools-mcp-server).
+            tools.register(WhoisLookupTool())
+            tools.register(DnsRecordsTool())
+            tools.register(DnsHealthCheckTool())
+            tools.register(DomainAnalysisTool())
             system_prompt = self._build_subagent_prompt()
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},

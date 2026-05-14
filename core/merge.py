@@ -54,6 +54,21 @@ def build_final_report(
                     "tool_trace": decision.get("tool_trace", {}),
                 }
             )
+        elif decision and decision.get("reason"):
+            # decision exists but LLM/runner couldn't label —— 保留它写下的具体 reason
+            # 而不是覆盖成笼统的 "agent_skipped"。pre-filter 与 LLM-evidence-insufficient
+            # 都走这条分支。
+            merged.update(
+                {
+                    "final_label": None,
+                    "app": None,
+                    "service_type": None,
+                    "confidence": decision.get("confidence"),
+                    "reason": decision.get("reason"),
+                    "evidence": decision.get("evidence", []),
+                    "tool_trace": decision.get("tool_trace", {}),
+                }
+            )
         else:
             merged.update(_AGENT_SKIPPED)
         unknown_labeled.append(merged)

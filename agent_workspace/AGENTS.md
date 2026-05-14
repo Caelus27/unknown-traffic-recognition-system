@@ -43,19 +43,32 @@
 不在词表里的服务类型一律落到 `web`，并在 `reason` 中写明猜测来源。
 
 ## 工作流（必须遵循）
-1. 用 `read_file` 读取输入文件。
-2. 阅读 `skills/traffic_classify/SKILL.md` 学习判断规则。
+1. 用 `read_file` **一次性读完**输入文件 inputs/<...>.json。**不要分页**，不要 `exec cat` / `exec python3 -c`。
+2. 阅读 `skills/traffic_classify/SKILL.md` 学习判断规则与工具路由表。
 3. 对每条 flow：
-   - **优先级链**：`sni > active_fetch（web_fetch）> cert/ip > behavior_stats > classification_model`。
-   - 加密流量：先看 SNI/SAN/ALPN；SNI 缺失时考虑 web_fetch 主动访问域名/IP 拿网页标题或证书摘要。
-   - 明文流量：看 HTTP host/uri/user_agent；如有需要 web_fetch 验证。
+   - **优先级链**：`sni 命中已知品牌（无需查询）> mcp_firecrawl_scrape SNI 域名 > mcp_ip2location IP 归属 > whois/dns 域名验证 > behavior_stats > classification_model`。
+   - 加密流量：先看 SNI/SAN/ALPN；SNI 缺失只剩 IP 时**直接用 `mcp_ip2location_get_geolocation`**——不要用 web_search/web_fetch 查 IP 归属。
+   - 明文流量：看 HTTP host/uri/user_agent；如要验证用 `mcp_firecrawl-mcp_firecrawl_scrape`。
    - `classification_model.label`（来自 ET-BERT）只作为 `service_type` 的低权重证据，不要直接当成 final_label；它给出的是 `bulk-transfer/interactive/stream/vpn/web` 五选一。
-4. `confidence`：归一化到 [0,1]。SNI 命中已知品牌可达 0.85+；只有统计特征猜测时通常 ≤ 0.5。
+4. `confidence`：归一化到 [0,1]。SNI 命中已知品牌可达 0.85+；只有统计/分类模型证据时通常 ≤ 0.5。
 5. 证据严重不足时把 `final_label/app/service_type` 全置 null，confidence 置 0，把怀疑写到 `reason` 里——**不要硬猜**。
 6. 用 `write_file` 把 JSON 写到 outputs 目录。
 
+## 工具路由速查（详见 ./TOOLS.md）
+
+| 任务 | 用 | 别用 |
+|---|---|---|
+| 读 chunk 输入 | `read_file`（一次性整文件） | `exec`、分页 read_file |
+| IP → ASN/ISP | `mcp_ip2location_get_geolocation` | `web_search`/`web_fetch`/`whois_lookup(IP)` |
+| 域名内容 | `mcp_firecrawl-mcp_firecrawl_scrape` | `web_fetch`（次选）|
+| 域名搜索 | `mcp_firecrawl-mcp_firecrawl_search` | `web_search`（次选）|
+| 域名 WHOIS/DNS | `whois_lookup`/`dns_records`（仅 FQDN） | 同左但传 IP |
+| 写决策 | `write_file` | — |
+
 ## 你不要做的事
 - 不要把整个 input JSON 拷到 prompt 或回复里（token 浪费）。
-- 不要执行 shell（exec 工具已在 config 中关闭）。
+- **不要使用 `exec` 工具**——你不需要 shell；read_file 已经能给你 chunk 输入的全文，每次 `exec python3 -c "json.load(...)"` 至少耗几秒，跑十几次就是几分钟。
+- **不要分页 read_file `agent_workspace/.mybot/tool-results/*.txt`**——这些是上一次工具结果被截断后留下的缓存，分页读相当于慢动作回放自己之前看过的东西。
+- 不要对同一目标（IP/域名）调用超过 2 次外部工具（runtime 会硬拒）。
 - 不要去访问 workspace 之外的文件（restrictToWorkspace=true）。
 - 完成后用一句话告诉用户已写到哪个文件即可，不要在对话里再贴 JSON。

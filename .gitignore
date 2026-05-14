@@ -3,8 +3,12 @@ __pycache__/
 *.pyc
 *.log
 *.json
+*.jsonl
 *.csv
 *.bin
 *.tsv
 *.pcap
 *.html
+.txt
+agent_workspace/.mybot/
+.claude
